@@ -2,6 +2,10 @@
 /dso-client/
 .dso-installer/
 
+# The DSO Reconstruction server, a repository of its own, and its download.
+/DSOR_Server/
+/.server-download/
+
 # The launcher's settings hold the current session, and its shortcut holds local paths.
 launcher-client.json
 *.lnk

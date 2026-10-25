@@ -16,7 +16,11 @@ rem    run.cmd --help          the installer's options
 rem
 rem  Every argument is passed through to dso_installer.py; a relative folder is
 rem  relative to this script's folder. When the folder already holds a client
-rem  and neither --reinstall nor --launcher-only is given, it asks which.
+rem  and neither --reinstall nor --launcher-only is given, it asks which. On a
+rem  first install it offers to download the DSO Reconstruction server
+rem  (DSO-Reconstruction/DSOR_Server) into DSOR_Server\ beside this script, and
+rem  a server there without the client's data gets it (dso_installer.py
+rem  --server-data) once the client is installed.
 rem
 rem  Python: the interpreter the DSO server runs on (Python 3.12 or newer,
 rem  64-bit), found the way the server's run.bat finds it: py -3.12-64,
@@ -39,6 +43,9 @@ rem Where a per-user install goes. This console does not see the PATH entries
 rem the installer adds until it is reopened, so it is also looked for here.
 set "PY_HOME=%LOCALAPPDATA%\Programs\Python\Python312"
 
+set "SERVER_REPO=DSO-Reconstruction/DSOR_Server"
+set "SERVER_DIR=DSOR_Server"
+
 rem Started from Explorer (cmd /c "...\run.cmd"): keep the window open at the end.
 set "PAUSE_AT_END="
 echo %cmdcmdline% | find /i "%~nx0" >nul && set "PAUSE_AT_END=1"
@@ -46,6 +53,12 @@ set "EXIT_CODE=1"
 
 call :choose_mode %*
 if "%MODE%"=="quit" goto finish
+rem No client yet: asked now, before the long download.
+if not defined MODE call :offer_server %*
+rem A server here without the client's data gets it once the client is in
+rem place; data it already has is left alone.
+set "SERVER_DATA="
+if exist "%SERVER_DIR%\data\" if not exist "%SERVER_DIR%\data\db\static.db4" set "SERVER_DATA=1"
 call :find_python
 if defined PY goto launch
 call :install_python || goto finish
@@ -60,6 +73,7 @@ goto finish
 set "INSTALL_FLAGS="
 if "%MODE%"=="reinstall" set "INSTALL_FLAGS=--reinstall"
 if "%MODE%"=="keep" set "INSTALL_FLAGS=--launcher-only"
+if defined SERVER_DATA set "INSTALL_FLAGS=%INSTALL_FLAGS% --server-data %SERVER_DIR%"
 echo [run.cmd] %PY% dso_installer.py %INSTALL_FLAGS%
 echo(
 %PY% "%~dp0dso_installer.py" %* %INSTALL_FLAGS%
@@ -83,6 +97,7 @@ if not "%EXIT_CODE%"=="0" goto finish
 echo(
 echo [run.cmd] Ready. Start DSOLauncher (the shortcut in this folder) to log in
 echo   and play.
+if defined SERVER_DATA echo   The server in %SERVER_DIR% has the client's data; its README.md explains how to start it.
 
 :finish
 popd
@@ -140,6 +155,48 @@ set "MODE=quit"
 exit /b 0
 
 
+rem --- The server -----------------------------------------------------------
+:offer_server
+rem Not for --help, nor when the server is already here.
+for %%A in (%*) do if /i "%%~A"=="--help" exit /b 0
+for %%A in (%*) do if /i "%%~A"=="-h" exit /b 0
+if exist "%SERVER_DIR%\" exit /b 0
+echo(
+echo [run.cmd] The DSO Reconstruction server can be downloaded as well, from
+echo   github.com/%SERVER_REPO% into %SERVER_DIR% beside this script
+echo   (a few MB). It runs the game services the launcher logs in to.
+echo(
+choice /c YN /m "Download the server too"
+rem 2: no; 255: no console to ask on.
+if errorlevel 2 exit /b 0
+echo(
+echo [run.cmd] Downloading %SERVER_REPO% into %SERVER_DIR%
+rem With git, a clone that git pull updates; without, the default branch as
+rem an archive.
+where git >nul 2>&1 || goto server_archive
+set "GIT_TERMINAL_PROMPT=0"
+git clone "https://github.com/%SERVER_REPO%.git" "%SERVER_DIR%" || goto server_failed
+exit /b 0
+:server_archive
+set "SERVER_STAGE=.server-download"
+if exist "%SERVER_STAGE%\" rmdir /s /q "%SERVER_STAGE%"
+mkdir "%SERVER_STAGE%" || goto server_failed
+call :download "https://github.com/%SERVER_REPO%/archive/HEAD.zip" "%SERVER_STAGE%\server.zip" || goto server_failed
+call :unzip "%SERVER_STAGE%\server.zip" "%SERVER_STAGE%" || goto server_failed
+del "%SERVER_STAGE%\server.zip"
+rem The archive holds one folder, named after the repository and branch.
+for /d %%D in ("%SERVER_STAGE%\*") do move "%%D" "%SERVER_DIR%" >nul
+rmdir /s /q "%SERVER_STAGE%"
+if not exist "%SERVER_DIR%\README.md" goto server_failed
+exit /b 0
+:server_failed
+if defined SERVER_STAGE if exist "%SERVER_STAGE%\" rmdir /s /q "%SERVER_STAGE%"
+echo(
+echo [run.cmd] WARNING: the server could not be downloaded; the client install
+echo   goes on. It is at https://github.com/%SERVER_REPO%
+exit /b 0
+
+
 rem --- Interpreter selection ------------------------------------------------
 :find_python
 set "PY="
@@ -174,14 +231,7 @@ if errorlevel 2 goto install_declined
 set "PY_DOWNLOAD=%TEMP%\%PY_INSTALLER%"
 echo(
 echo [run.cmd] Downloading %PY_URL%
-rem curl ships with Windows 10 1803 and later.
-if not exist "%SystemRoot%\System32\curl.exe" goto download_with_powershell
-"%SystemRoot%\System32\curl.exe" -fL --retry 3 -o "%PY_DOWNLOAD%" "%PY_URL%"
-goto downloaded
-:download_with_powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '%PY_URL%' -OutFile '%PY_DOWNLOAD%'"
-:downloaded
-if errorlevel 1 goto download_failed
+call :download "%PY_URL%" "%PY_DOWNLOAD%" || goto download_failed
 
 set "HASH="
 for /f "skip=1 delims=" %%H in ('certutil -hashfile "%PY_DOWNLOAD%" SHA256 2^>nul') do if not defined HASH set "HASH=%%H"
@@ -226,3 +276,23 @@ echo(
 echo [run.cmd] ERROR: the downloaded installer is not the expected file
 echo   (SHA-256 %HASH%); it was deleted and nothing was installed.
 exit /b 1
+
+
+rem --- Helpers ---------------------------------------------------------------
+:download
+rem %1 to the file %2. curl and tar ship with Windows 10 1803 and later.
+if not exist "%SystemRoot%\System32\curl.exe" goto download_powershell
+"%SystemRoot%\System32\curl.exe" -fL --retry 3 -o "%~2" "%~1"
+exit /b %errorlevel%
+:download_powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '%~1' -OutFile '%~2'"
+exit /b %errorlevel%
+
+:unzip
+rem The archive %1 into the folder %2.
+if not exist "%SystemRoot%\System32\tar.exe" goto unzip_powershell
+"%SystemRoot%\System32\tar.exe" -xf "%~1" -C "%~2"
+exit /b %errorlevel%
+:unzip_powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%~1' -DestinationPath '%~2'"
+exit /b %errorlevel%

@@ -17,7 +17,8 @@
 
 The work files live in <folder>/.dso-installer and are removed once the
 install is complete (--keep-cache keeps the downloads for the next run).
-The launcher in launcher/ is then pointed at the installed client.
+The launcher in launcher/ is then pointed at the installed client, and
+--server-data copies the data the DSO server reads into its checkout.
 Python 3.9 or later, standard library only. On Windows, run.cmd finds the
 Python the DSO server runs on, or installs it, and starts this script.
 """
@@ -636,6 +637,62 @@ def configure_launcher(dest):
     log(f"Launcher set to {executable} ({config.path})")
 
 
+def populate_server_data(dest, server):
+    """Copy what the DSO server reads from the client into <server>/data, as
+    its data/*/README.txt files and setup_client_assets.py name it: the static
+    database (db/), each map's .db4, .map and .col (maps/), and each map's
+    navigation mesh with navshapes.bin (navigation/); then decode the quests
+    into quests.xml. Other files there stay."""
+    source, data = dest / "export_win32", server / "data"
+    if not data.is_dir():
+        raise InstallError(f"{server} has no data folder; is it a DSOR_Server checkout?")
+    copies = [(source / "db" / "static.db4", data / "db" / "static.db4"),
+              (source / "tables" / "navshapes.bin", data / "navigation" / "navshapes.bin")]
+    copies += [(path, data / "maps" / path.name) for path in sorted((source / "maps").iterdir())
+               if path.is_file() and path.suffix.lower() in (".db4", ".map", ".col")]
+    navigation = source / "navigation"
+    copies += [(path, data / "navigation" / path.relative_to(navigation))
+               for path in sorted(navigation.rglob("*")) if path.suffix.lower() == ".tok"]
+    missing = [str(path) for path, _target in copies if not path.is_file()]
+    if missing:
+        raise InstallError(f"the client lacks what the server needs: {', '.join(missing[:5])}")
+    log(f"Copying the server's data into {data}")
+    progress = Progress("server data", len(copies))
+    for path, target in copies:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        progress.add(path.stat().st_size)
+        progress.show()
+    progress.show(final=True)
+    decode_quests(source / "quests" / "quests.pbxml", data / "quests.xml")
+
+
+def decode_quests(pack, quests_xml):
+    """The quest definitions the server reads (data/quests.xml), decoded from
+    the client's quests.pbxml with pbxml_to_xml.py beside this script. An
+    existing quests.xml is kept, as the server's own setup keeps it."""
+    if quests_xml.is_file():
+        log(f"Kept the server's {quests_xml}")
+        return
+    converter_path = Path(__file__).resolve().parent / "pbxml_to_xml.py"
+    if not converter_path.is_file() or not pack.is_file():
+        log(f"Quests not decoded: {pack if not pack.is_file() else converter_path} is missing")
+        return
+    spec = importlib.util.spec_from_file_location("pbxml_to_xml", converter_path)
+    converter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(converter)
+    part = quests_xml.with_name(quests_xml.name + ".part")
+    try:
+        documents, total, failures = converter.convert(pack, part)
+    except (converter.FormatError, struct.error) as e:
+        part.unlink(missing_ok=True)
+        raise InstallError(f"{pack}: {e}") from e
+    os.replace(part, quests_xml)
+    log(f"Decoded {len(documents):,} of {total:,} quests into {quests_xml}")
+    for name, error in failures[:5]:
+        log(f"  not decoded: {name}: {error}")
+
+
 def remove_client(dest):
     """Delete what an install wrote to <folder>: export_win32, the download
     cache, the applet blobs with the executables and DLLs they decode to, and
@@ -681,6 +738,10 @@ def parse_args(argv):
                            "DLLs and .nz2 blobs, the manifests, the download cache), then install the current version")
     mode.add_argument("--launcher-only", action="store_true",
                       help="download nothing: point the launcher at the client already in the folder")
+    parser.add_argument("--server-data", metavar="SERVER",
+                        help="then copy what the DSO server reads from the client (the static database, the maps, "
+                             "the navigation meshes) into the data folder of the DSOR_Server checkout SERVER, and "
+                             "decode the quests into its data/quests.xml")
     parser.add_argument("--extractor", help="a local drakensang-nb3-bundle-extractor checkout (or its neb.py)")
     parser.add_argument("--extractor-ref", default=EXTRACTOR_REF,
                         help=f"the extractor commit or branch to fetch from GitHub (default: {EXTRACTOR_REF[:12]})")
@@ -696,6 +757,8 @@ def main(argv=None):
         if not (dest / "export_win32").is_dir():
             raise InstallError(f"no client is installed in {dest}")
         configure_launcher(dest)
+        if args.server_data:
+            populate_server_data(dest, Path(args.server_data).resolve())
         return
     cdn, applet = args.cdn.rstrip("/"), args.applet.rstrip("/")
     started = time.monotonic()
@@ -724,6 +787,8 @@ def main(argv=None):
 
     install(dest, output_dir, work, applet_dir, applet_files)
     configure_launcher(dest)
+    if args.server_data:
+        populate_server_data(dest, Path(args.server_data).resolve())
     if args.keep_cache:
         shutil.rmtree(output_dir, ignore_errors=True)
         log(f"Kept the downloads in {work}")
