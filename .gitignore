@@ -1,0 +1,14 @@
+# The game client and the installer's work files: third-party material, never committed.
+/dso-client/
+.dso-installer/
+
+# The launcher's settings hold the current session, and its shortcut holds local paths.
+launcher-client.json
+*.lnk
+
+# Build output and the build environment.
+/launcher/dist/
+/launcher/build/
+/launcher/.venv/
+__pycache__/
+*.py[cod]
