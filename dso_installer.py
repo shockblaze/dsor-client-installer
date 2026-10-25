@@ -641,8 +641,9 @@ def populate_server_data(dest, server):
     """Copy what the DSO server reads from the client into <server>/data, as
     its data/*/README.txt files and setup_client_assets.py name it: the static
     database (db/), each map's .db4, .map and .col (maps/), and each map's
-    navigation mesh with navshapes.bin (navigation/); then decode the quests
-    into quests.xml. Other files there stay."""
+    navigation mesh with navshapes.bin (navigation/); the whole language
+    folder (language/<locale>/...); then decode the quests into quests.xml.
+    Other files there stay."""
     source, data = dest / "export_win32", server / "data"
     if not data.is_dir():
         raise InstallError(f"{server} has no data folder; is it a DSOR_Server checkout?")
@@ -653,6 +654,9 @@ def populate_server_data(dest, server):
     navigation = source / "navigation"
     copies += [(path, data / "navigation" / path.relative_to(navigation))
                for path in sorted(navigation.rglob("*")) if path.suffix.lower() == ".tok"]
+    language = source / "language"
+    copies += [(path, data / "language" / path.relative_to(language))
+               for path in sorted(language.rglob("*")) if path.is_file()]
     missing = [str(path) for path, _target in copies if not path.is_file()]
     if missing:
         raise InstallError(f"the client lacks what the server needs: {', '.join(missing[:5])}")
@@ -740,8 +744,8 @@ def parse_args(argv):
                       help="download nothing: point the launcher at the client already in the folder")
     parser.add_argument("--server-data", metavar="SERVER",
                         help="then copy what the DSO server reads from the client (the static database, the maps, "
-                             "the navigation meshes) into the data folder of the DSOR_Server checkout SERVER, and "
-                             "decode the quests into its data/quests.xml")
+                             "the navigation meshes, the language folder) into the data folder of the DSOR_Server "
+                             "checkout SERVER, and decode the quests into its data/quests.xml")
     parser.add_argument("--extractor", help="a local drakensang-nb3-bundle-extractor checkout (or its neb.py)")
     parser.add_argument("--extractor-ref", default=EXTRACTOR_REF,
                         help=f"the extractor commit or branch to fetch from GitHub (default: {EXTRACTOR_REF[:12]})")
