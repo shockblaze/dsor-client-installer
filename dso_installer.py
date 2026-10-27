@@ -17,8 +17,9 @@
 
 The work files live in <folder>/.dso-installer and are removed once the
 install is complete (--keep-cache keeps the downloads for the next run).
-The launcher in launcher/ is then pointed at the installed client, and
---server-data copies the data the DSO server reads into its checkout.
+The launcher in launcher/ is then pointed at the installed client,
+--server-data copies the data the DSO server reads into its checkout, and
+the server checkout's asset patches (--server) are applied to both.
 Python 3.9 or later, standard library only. On Windows, run.cmd finds the
 Python the DSO server runs on, or installs it, and starts this script.
 """
@@ -28,6 +29,7 @@ import hashlib
 import http.client
 import importlib.util
 import io
+import json
 import lzma
 import os
 import shutil
@@ -697,6 +699,76 @@ def decode_quests(pack, quests_xml):
         log(f"  not decoded: {name}: {error}")
 
 
+def run_server_tool(server, name, arguments):
+    """Run <server>/tools/<name> on this interpreter (run.cmd picks the one the
+    server runs on) and return its output, or None when the checkout has no
+    such tool or the tool failed (its last line is logged)."""
+    tool = server / "tools" / name
+    if not tool.is_file():
+        log(f"Skipped {name}: {server} has no tools/{name}")
+        return None
+    result = subprocess.run([sys.executable, str(tool), *map(str, arguments)], cwd=server,
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        lines = output.splitlines()
+        log(f"WARNING: {name} failed: {lines[-1] if lines else f'exit code {result.returncode}'}")
+        return None
+    return output
+
+
+def patch_assets(dest, server):
+    """Apply the DSO server's asset patches to the client, and to the server's
+    data when it holds the client's files:
+
+    - tools/patch_k_map_return_gates.py adds the return gates between Greyling
+      Forest, Tidal Wildwood and Kingshill to both maps databases and names
+      Greyling Forest in both static databases;
+    - tools/install_admin_effects.py installs the admin status effects into the
+      server's static.db4 and copies it over the client's, so their wire ids
+      (row numbers) match, and titles them in the client's language files,
+      which are then copied into the server's data/language.
+
+    Both change nothing once applied, and back up each file before its first
+    change. A failed patch leaves the client playable without it, so it is
+    reported and the install goes on."""
+    client, data = dest / "export_win32", server / "data"
+    server_db = data / "db" / "static.db4"
+    gates = ["--map-dir", client / "maps", "--static-db", client / "db" / "static.db4"]
+    if server_db.is_file():
+        gates += ["--map-dir", data / "maps", "--static-db", server_db]
+    output = run_server_tool(server, "patch_k_map_return_gates.py", gates)
+    if output is not None:
+        added = output.splitlines()[-1].partition(";")[0]
+        log(f"Return gates checked ({added.lower()}) in the client"
+            + (" and the server's data" if server_db.is_file() else ""))
+
+    if not server_db.is_file():
+        log(f"Skipped the admin effects: {server_db} is missing (--server-data copies it)")
+        return
+    output = run_server_tool(server, "install_admin_effects.py", [
+        "--server-db", server_db, "--client-db", client / "db" / "static.db4",
+        "--language-root", client / "language", "--apply"])
+    if output is None:
+        log("  The server's static.db4 must hold the client's revision: refresh it "
+            "with --server-data, then run again.")
+        return
+    report = json.loads(output[output.index("{"):output.rindex("}") + 1])
+    changes = [text for flag, text in ((report["database_changed"], "installed in the server's static.db4"),
+                                       (report["client_sync"], "copied to the client"),
+                                       (report["locales_changed"], "titled in the client's language files"))
+               if flag]
+    log(f"Admin effects ({len(report['effects'])}): {', '.join(changes) or 'already in place'}")
+    copied = 0
+    for path in sorted((client / "language").glob("*/db.statuseffect.xml")):
+        target = data / "language" / path.parent.name / path.name
+        if target.parent.is_dir() and (not target.is_file() or target.read_bytes() != path.read_bytes()):
+            shutil.copyfile(path, target)
+            copied += 1
+    if copied:
+        log(f"  Copied {copied} status-effect language file(s) into {data / 'language'}")
+
+
 def remove_client(dest):
     """Delete what an install wrote to <folder>: export_win32, the download
     cache, the applet blobs with the executables and DLLs they decode to, and
@@ -746,6 +818,10 @@ def parse_args(argv):
                         help="then copy what the DSO server reads from the client (the static database, the maps, "
                              "the navigation meshes, the language folder) into the data folder of the DSOR_Server "
                              "checkout SERVER, and decode the quests into its data/quests.xml")
+    parser.add_argument("--server", metavar="SERVER",
+                        help="the DSOR_Server checkout whose asset patches (the K-map return gates, the admin "
+                             "status effects) are applied to the client and to that server's data (default: the "
+                             "--server-data checkout, else DSOR_Server beside this script when it is there)")
     parser.add_argument("--extractor", help="a local drakensang-nb3-bundle-extractor checkout (or its neb.py)")
     parser.add_argument("--extractor-ref", default=EXTRACTOR_REF,
                         help=f"the extractor commit or branch to fetch from GitHub (default: {EXTRACTOR_REF[:12]})")
@@ -757,12 +833,17 @@ def main(argv=None):
     dest = Path(args.folder).resolve()
     work = Path(args.work).resolve() if args.work else dest / ".dso-installer"
     input_dir, output_dir, applet_dir = work / "input", work / "output", work / "applet"
+    server = args.server or args.server_data
+    if server is None and (Path(__file__).resolve().parent / "DSOR_Server" / "tools").is_dir():
+        server = Path(__file__).resolve().parent / "DSOR_Server"
     if args.launcher_only:
         if not (dest / "export_win32").is_dir():
             raise InstallError(f"no client is installed in {dest}")
         configure_launcher(dest)
         if args.server_data:
             populate_server_data(dest, Path(args.server_data).resolve())
+        if server is not None:
+            patch_assets(dest, Path(server).resolve())
         return
     cdn, applet = args.cdn.rstrip("/"), args.applet.rstrip("/")
     started = time.monotonic()
@@ -793,6 +874,8 @@ def main(argv=None):
     configure_launcher(dest)
     if args.server_data:
         populate_server_data(dest, Path(args.server_data).resolve())
+    if server is not None:
+        patch_assets(dest, Path(server).resolve())
     if args.keep_cache:
         shutil.rmtree(output_dir, ignore_errors=True)
         log(f"Kept the downloads in {work}")

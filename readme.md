@@ -14,6 +14,8 @@ Then start `DSOLauncher` to log in and play.
 
 On a first install, `run.cmd` also offers to download the [DSO Reconstruction server](https://github.com/DSO-Reconstruction/DSOR_Server) into `DSOR_Server` (with Git, as a clone that `git pull` updates). Once the client is installed, the server's `data` folder gets what its `README.txt` files ask for, copied from the client's `export_win32`: `db/static.db4`, each map's `.db4`, `.map` and `.col` in `maps/`, and the navigation meshes (`.tok`) with `navshapes.bin` in `navigation/`, and the whole `language` folder as `data/language` (`data/language/en`, ...). The client's `quests/quests.pbxml` is decoded into `data/quests.xml` with `pbxml_to_xml.py` (an existing `quests.xml` is kept). A server that already has its `data/db/static.db4` is left as it is. Its README explains how to start it.
 
+Every run then applies the server's asset patches to the client, and to the server's data when it has the client's files: the return gates between Greyling Forest, Tidal Wildwood and Kingshill (the server's `tools/patch_k_map_return_gates.py`), and the admin status effects (`tools/install_admin_effects.py`, which keeps the server's and the client's `static.db4` identical so the effects' ids match). Both do nothing once applied and back up each file beside it before changing it. The patches come from the server in `DSOR_Server`, or from another checkout given with `--server`, for example `run.cmd --launcher-only --server D:\DSO\DSOR_Server`. A client reinstalled from a newer build also needs the server's data refreshed from it (`--server-data`) before the admin effects can be installed; the installer says so when that is the case.
+
 When `dso-client` already holds a client, `run.cmd` asks whether to keep it (only the launcher is set up) or to reinstall (the client files are deleted, then the current version is installed). From a console:
 
 ```
@@ -21,6 +23,7 @@ run.cmd                   install into dso-client
 run.cmd D:\Games\DSO      install into another folder
 run.cmd --reinstall       delete the installed client, install the current version
 run.cmd --launcher-only   keep the installed client, set up the launcher
+run.cmd --server PATH     apply the patches of the DSOR_Server checkout at PATH
 run.cmd --help            all of the installer's options
 ```
 
