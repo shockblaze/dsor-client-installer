@@ -20,8 +20,11 @@ install is complete (--keep-cache keeps the downloads for the next run).
 The launcher in launcher/ is then pointed at the installed client,
 --server-data copies the data the DSO server reads into its checkout, and
 the server checkout's asset patches (--server) are applied to both.
+--data-only installs export_win32 alone, for a server without the game
+client: no executables, and the launcher is left alone.
 Python 3.9 or later, standard library only. On Windows, run.cmd finds the
-Python the DSO server runs on, or installs it, and starts this script.
+Python the DSO server runs on, or installs it, and starts this script; on
+Linux, run-server-linux.sh sets up the server with --data-only.
 """
 import argparse
 import contextlib
@@ -700,9 +703,10 @@ def decode_quests(pack, quests_xml):
 
 
 def run_server_tool(server, name, arguments):
-    """Run <server>/tools/<name> on this interpreter (run.cmd picks the one the
-    server runs on) and return its output, or None when the checkout has no
-    such tool or the tool failed (its last line is logged)."""
+    """Run <server>/tools/<name> on this interpreter (run.cmd or
+    run-server-linux.sh picks the one the server runs on) and return its
+    output, or None when the checkout has no such tool or the tool failed (its
+    last line is logged)."""
     tool = server / "tools" / name
     if not tool.is_file():
         log(f"Skipped {name}: {server} has no tools/{name}")
@@ -812,8 +816,11 @@ def parse_args(argv):
     mode.add_argument("--reinstall", action="store_true",
                       help="first delete the client files already in the folder (export_win32, the executables, "
                            "DLLs and .nz2 blobs, the manifests, the download cache), then install the current version")
-    mode.add_argument("--launcher-only", action="store_true",
-                      help="download nothing: point the launcher at the client already in the folder")
+    mode.add_argument("--launcher-only", "--no-download", dest="launcher_only", action="store_true",
+                      help="download nothing: use the client already in the folder, and point the launcher at it")
+    parser.add_argument("--data-only", action="store_true",
+                        help="install only the game data (export_win32), for a DSO server without the game "
+                             "client: no executables, and the launcher is left alone")
     parser.add_argument("--server-data", metavar="SERVER",
                         help="then copy what the DSO server reads from the client (the static database, the maps, "
                              "the navigation meshes, the language folder) into the data folder of the DSOR_Server "
@@ -839,7 +846,8 @@ def main(argv=None):
     if args.launcher_only:
         if not (dest / "export_win32").is_dir():
             raise InstallError(f"no client is installed in {dest}")
-        configure_launcher(dest)
+        if not args.data_only:
+            configure_launcher(dest)
         if args.server_data:
             populate_server_data(dest, Path(args.server_data).resolve())
         if server is not None:
@@ -851,14 +859,15 @@ def main(argv=None):
     if args.reinstall:
         # Offline, the installed client stays rather than leaving none.
         http.fetch(f"{cdn}/__root.txt")
-        http.fetch(f"{applet}/gamemanifest.xml")
+        if not args.data_only:
+            http.fetch(f"{applet}/gamemanifest.xml")
         remove_client(dest)
     input_dir.mkdir(parents=True, exist_ok=True)
 
     log(f"Installing into {dest}")
     neb_path = extractor_path(args, work)
     build = read_tables(http, cdn, input_dir, 2 * args.downloads)
-    applet_files = download_applet(http, applet, applet_dir)
+    applet_files = [] if args.data_only else download_applet(http, applet, applet_dir)
     download_bundles(http, cdn, build, input_dir, args.downloads)
     download_loose(http, cdn, build, input_dir, 2 * args.downloads)
     prune_input(build, input_dir)
@@ -871,7 +880,8 @@ def main(argv=None):
     complete_tree(build, output_dir)
 
     install(dest, output_dir, work, applet_dir, applet_files)
-    configure_launcher(dest)
+    if not args.data_only:
+        configure_launcher(dest)
     if args.server_data:
         populate_server_data(dest, Path(args.server_data).resolve())
     if server is not None:

@@ -27,16 +27,35 @@ run.cmd --server PATH     apply the patches of the DSOR_Server checkout at PATH
 run.cmd --help            all of the installer's options
 ```
 
+## A server on Linux
+
+`run-server-linux.sh` sets up the DSO Reconstruction server on Linux with the client's data. It installs no game client and no launcher:
+
+1. it finds a 64-bit Python 3.12 or newer: `$DSO_PYTHON` when it is set (as the server's `start.sh` takes it), otherwise the first of `python3`, `python3.14`, `python3.13`, `python3.12` and `python`. If there is none, it prints the install command for the system's package manager. Debian 13 and Ubuntu 24.04 or newer ship one as `python3`; on older releases, `uv python install 3.12` installs one for your user only;
+2. it downloads the server into `DSOR_Server` (with Git, as a clone that `git pull` updates), unless the server is already there;
+3. it downloads and unpacks the client's game data into `dso-client` as `run.cmd` does, but only `export_win32` (`dso_installer.py --data-only`: no executables, and the launcher is left alone);
+4. it fills the server's `data` folder as described above when the server has no `data/db/static.db4` yet, or after a reinstall, then applies the server's asset patches.
+
+Then start the server with `bash DSOR_Server/start.sh`. The script prints that line with `DSO_PYTHON=...` in front when the Python it found is not `python3`.
+
+```
+bash run-server-linux.sh                 set up the server
+bash run-server-linux.sh --reinstall     download the current data again, refresh the server's from it
+bash run-server-linux.sh --no-download   keep the downloaded data, apply the server's patches
+bash run-server-linux.sh --help          all of the installer's options
+```
+
 ## What is in here
 
 | Path | What |
 |---|---|
 | `run.cmd` | the entry point above |
+| `run-server-linux.sh` | sets up the DSO server on Linux with the client's data, without the client |
 | `dso_installer.py` | the download and extraction (Python, standard library only) |
 | `pbxml_to_xml.py` | decodes the client's `.pbxml` packs into XML, here the quests for the server |
 | `launcher/` | the login launcher, from the DSO server's `dso_custom_client` ([its README](launcher/README.md)) |
-| `dso-client/` | the installed client, written by `run.cmd` |
-| `DSOR_Server/` | the DSO Reconstruction server, when `run.cmd` was asked to download it |
+| `dso-client/` | the installed client, written by `run.cmd` (only its `export_win32` data with `run-server-linux.sh`) |
+| `DSOR_Server/` | the DSO Reconstruction server, when `run.cmd` was asked to download it or `run-server-linux.sh` set it up |
 | `DSOLauncher.lnk`, `launcher-client.json` | the launcher's shortcut and its settings (with the current session), written by `run.cmd` |
 
 ## Licensing
