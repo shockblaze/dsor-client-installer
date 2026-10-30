@@ -6,6 +6,10 @@ session it issues is what the game client is started with. Every network call
 runs off the UI thread so a slow or unreachable server cannot freeze the
 window.
 
+"Remember password" keeps the password for that username on that account
+service, encrypted for the Windows user, and fills it in whenever the two
+match again.
+
 The window has three states. It opens on a loader while the account service
 is probed, then shows either the login form or, when the service cannot be
 reached, "Servers are currently down" with a retry. Settings stay reachable
@@ -35,6 +39,7 @@ from account_client import (  # noqa: E402
     ServiceUnreachableError,
     normalize_server_url,
 )
+import dpapi  # noqa: E402
 from dso_client import (  # noqa: E402
     LANGUAGES,
     ClientConfig,
@@ -722,6 +727,9 @@ class PasswordDialog(ModalDialog):
 
         def done(_account) -> None:
             self.config_store.clear_session()
+            # A remembered password follows the change instead of going stale.
+            if self.config_store.remembered_password(username) is not None:
+                self.config_store.remember_password(username, new_password)
             self.result = username
             self.destroy()
 
@@ -919,6 +927,10 @@ class LauncherWindow(tk.Tk):
         # "checking" while the service is probed, then "online" or "offline";
         # the login form only exists in the first of those.
         self.state = "checking"
+        # The service and username the password field was last matched
+        # against, and the remembered password it was filled with, if any.
+        self._password_synced_for: tuple[str, str] | None = None
+        self._filled_password: str | None = None
         self.title("Drakensang Online - login")
         self.configure(bg=PANEL)
         self.resizable(False, False)
@@ -1052,16 +1064,41 @@ class LauncherWindow(tk.Tk):
     def _build_login_form(self) -> None:
         self.username = self._field(200, "Username")
         self.password = self._field(242, "Password", secret=True)
+        # Added to the entry's own focus bindings, not in place of them.
+        for sequence in ("<KeyRelease>", "<FocusOut>"):
+            self.username.bind(
+                sequence, lambda _event: self._sync_remembered_password(), add="+"
+            )
 
+        options_strip = _blend(BG_TOP, BG_BOTTOM, 292 / WINDOW_HEIGHT)
+        self.remember_password = tk.BooleanVar(value=False)
+        self.remember_password.trace_add(
+            "write", lambda *_args: self._remember_toggled()
+        )
+        if dpapi.AVAILABLE:
+            remember = ToggleCheck(
+                self.canvas,
+                "Remember password",
+                self.remember_password,
+                background=options_strip,
+                width=140,
+            )
+            self.canvas.create_window(
+                40, 292, anchor="w", window=remember, tags="form"
+            )
         forgot = LinkLabel(
             self.canvas,
             "Change your password",
             self._change_password,
             color=GOLD_DIM,
-            background=_blend(BG_TOP, BG_BOTTOM, 292 / WINDOW_HEIGHT),
+            background=options_strip,
         )
         self.canvas.create_window(
-            WINDOW_WIDTH / 2, 292, window=forgot, tags="form"
+            WINDOW_WIDTH - 40 if dpapi.AVAILABLE else WINDOW_WIDTH / 2,
+            292,
+            anchor="e" if dpapi.AVAILABLE else "center",
+            window=forgot,
+            tags="form",
         )
 
         self.login_button = GradientButton(
@@ -1265,6 +1302,8 @@ class LauncherWindow(tk.Tk):
     def _service_is_up(self, document: dict) -> None:
         self._set_state("online")
         self._set_server_label(str(document.get("name") or "Game server"))
+        # On startup, and after Settings may have pointed at another service.
+        self._sync_remembered_password()
         if self.username.get().strip():
             self.password.focus_set()
         else:
@@ -1289,6 +1328,41 @@ class LauncherWindow(tk.Tk):
             MUTED,
         )
 
+    def _sync_remembered_password(self, *, force: bool = False) -> None:
+        """Fill in the password remembered for this username and service.
+
+        Runs as the username is typed, so a password filled in for one
+        account never stays in the field to be sent as another's.
+        """
+
+        username = self.username.get().strip()
+        key = (str(self.config_store.setting("server_url")), username.casefold())
+        if key == self._password_synced_for and not force:
+            return
+        self._password_synced_for = key
+        remembered = (
+            self.config_store.remembered_password(username) if username else None
+        )
+        if remembered is not None:
+            self.password.set(remembered)
+            self.remember_password.set(True)
+        elif (
+            self._filled_password is not None
+            and self.password.get() == self._filled_password
+        ):
+            self.password.set("")
+            self.remember_password.set(False)
+        self._filled_password = remembered
+
+    def _remember_toggled(self) -> None:
+        # Unticking forgets at once rather than at the next login, so it also
+        # works for a password that no longer logs in.
+        if self.remember_password.get():
+            return
+        username = self.username.get().strip()
+        if username:
+            self.config_store.forget_password(username)
+
     def _service_is_down(self, exc: BaseException) -> None:
         self._set_state("offline")
         self._set_server_label("")
@@ -1311,8 +1385,12 @@ class LauncherWindow(tk.Tk):
 
         def done(session) -> None:
             self._busy(False)
-            self.password.set("")
             self.config_store.store_session(session)
+            if self.remember_password.get():
+                self.config_store.remember_password(session.username, password)
+                self._filled_password = password
+            else:
+                self.password.set("")
             self._refresh_logout_link()
             if not self.launch_after_login.get():
                 self.set_status(
@@ -1372,6 +1450,8 @@ class LauncherWindow(tk.Tk):
             self, self.config_store, self.username.get().strip()
         ).show()
         if username is not None:
+            # The dialog replaced a remembered password; show the new one.
+            self._sync_remembered_password(force=True)
             self._refresh_logout_link()
             self.set_status(
                 f"Password changed for {username}; log in again.", OK

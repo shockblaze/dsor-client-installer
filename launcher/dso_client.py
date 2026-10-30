@@ -18,6 +18,8 @@ commands. Settings and the cached session live in ``launcher-client.json``.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import getpass
 import json
 import os
@@ -40,6 +42,7 @@ from account_client import (  # noqa: E402
     Session,
     normalize_server_url,
 )
+import dpapi  # noqa: E402
 
 
 def application_directory() -> Path:
@@ -168,12 +171,16 @@ def format_duration(seconds: float) -> str:
 
 
 class ClientConfig:
-    """Launcher settings and the last session the service handed out."""
+    """Launcher settings, the last session the service handed out, and the
+    passwords remembered for an account on an account service."""
 
     def __init__(self, path: Path = CONFIG_FILE) -> None:
         self.path = Path(path)
         self.settings: dict[str, object] = dict(DEFAULT_SETTINGS)
         self.session: Session | None = None
+        # One entry per username and account service, the password encrypted
+        # for the Windows user (see dpapi.py).
+        self.passwords: list[dict] = []
         self._load()
 
     def _load(self) -> None:
@@ -195,12 +202,18 @@ class ClientConfig:
         cached = document.get("session")
         if isinstance(cached, dict):
             self.session = Session.from_document(cached)
+        self.passwords = [
+            entry
+            for entry in document.get("passwords") or []
+            if isinstance(entry, dict)
+        ]
 
     def save(self) -> None:
         document = {
             "version": CONFIG_VERSION,
             "settings": self.settings,
             "session": self.session.to_document() if self.session else None,
+            "passwords": self.passwords,
         }
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(
@@ -253,6 +266,60 @@ class ClientConfig:
             return None
         return session
 
+    def _password_key(
+        self, username: str, server_url: str | None
+    ) -> tuple[str, str]:
+        """The account service and username a password is remembered under."""
+
+        return (
+            normalize_server_url(server_url or str(self.setting("server_url"))),
+            username.strip().casefold(),
+        )
+
+    def remembered_password(
+        self, username: str, *, server_url: str | None = None
+    ) -> str | None:
+        """The password remembered for ``username`` on the account service,
+        the configured one unless ``server_url`` names another."""
+
+        key = self._password_key(username, server_url)
+        for entry in self.passwords:
+            if _password_entry_key(entry) != key:
+                continue
+            try:
+                blob = base64.b64decode(str(entry.get("password", "")), validate=True)
+                return dpapi.unprotect(blob, _password_entropy(key)).decode("utf-8")
+            except (binascii.Error, OSError, UnicodeDecodeError):
+                # Another Windows user's, or edited by hand: unusable either way.
+                return None
+        return None
+
+    def remember_password(
+        self, username: str, password: str, *, server_url: str | None = None
+    ) -> None:
+        key = self._password_key(username, server_url)
+        blob = dpapi.protect(password.encode("utf-8"), _password_entropy(key))
+        self.passwords = [
+            entry for entry in self.passwords if _password_entry_key(entry) != key
+        ]
+        self.passwords.append(
+            {
+                "server_url": key[0],
+                "username": username.strip(),
+                "password": base64.b64encode(blob).decode("ascii"),
+            }
+        )
+        self.save()
+
+    def forget_password(
+        self, username: str, *, server_url: str | None = None
+    ) -> None:
+        key = self._password_key(username, server_url)
+        kept = [entry for entry in self.passwords if _password_entry_key(entry) != key]
+        if len(kept) != len(self.passwords):
+            self.passwords = kept
+            self.save()
+
     def resolved_username(self, username: str | None) -> str:
         candidate = (username or str(self.settings.get("last_username", ""))).strip()
         if not candidate:
@@ -260,6 +327,19 @@ class ClientConfig:
                 "no username given and none remembered; pass one explicitly"
             )
         return candidate
+
+
+def _password_entry_key(entry: dict) -> tuple[str, str]:
+    return (
+        str(entry.get("server_url", "")),
+        str(entry.get("username", "")).strip().casefold(),
+    )
+
+
+def _password_entropy(key: tuple[str, str]) -> bytes:
+    # A remembered password decrypts only under the service and username it
+    # was stored for, so editing the file cannot send it to another server.
+    return "\n".join(key).encode("utf-8")
 
 
 def prompt_password(prompt: str, supplied: str | None) -> str:
@@ -618,6 +698,8 @@ def command_password(config: ClientConfig, args: argparse.Namespace) -> int:
     client.change_password(username, current, new_password)
     # The server ends every session issued under the old password.
     config.clear_session()
+    if config.remembered_password(username, server_url=client.url) is not None:
+        config.remember_password(username, new_password, server_url=client.url)
     print(f"Password changed for {username!r}; existing sessions were ended.")
     return 0
 

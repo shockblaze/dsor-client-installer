@@ -144,7 +144,7 @@ def build(
     # The CLI entry point imports the window lazily for its "gui" command.
     if not windowed:
         arguments += ["--hidden-import", "dso_launcher_gui"]
-    arguments += ["--hidden-import", "account_client"]
+    arguments += ["--hidden-import", "account_client", "--hidden-import", "dpapi"]
     print(f"\n=== building {name} ===")
     pyinstaller.run(arguments)
 

@@ -6,7 +6,8 @@
 /DSOR_Server/
 /.server-download/
 
-# The launcher's settings hold the current session, and its shortcut holds local paths.
+# The launcher's settings hold the current session and remembered passwords, and its
+# shortcut holds local paths.
 launcher-client.json
 *.lnk
 

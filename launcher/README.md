@@ -14,6 +14,7 @@ services validate.
 | `dso_client.py` | command line (`register`, `login`, `launch`, `logout`, `session`, `status`, `characters`, `password`, `config`, `gui`) |
 | `dso_launcher_gui.py` | Tk login window over the same service |
 | `account_client.py` | JSON-over-HTTP client for the account service |
+| `dpapi.py` | Windows DPAPI encryption for remembered passwords |
 | `build_exe.py` | freezes both front-ends into `dist` with PyInstaller |
 
 Nothing outside the standard library is needed to *run* either front-end; only
@@ -96,12 +97,33 @@ the stored session.
 Two clients at once means two accounts, since a second login on one account
 revokes the first session.
 
+## Remembered passwords
+
+"Remember password" under the password field keeps the password for that
+username on that account service. Whenever the window's username and the
+configured account service match a remembered pair again, the password is
+filled in and the box is ticked; typing another username, or pointing
+Settings at another service, takes the filled-in password back out, so one
+account's password is never sent as another's. Names match ignoring case.
+
+A password is remembered on a successful login with the box ticked, and
+replaced when it is changed from the launcher (the window's dialog or the
+`password` command). Unticking the box forgets the password for the username
+in the field at once, even when that password no longer logs in. Logging out
+ends the session and leaves a remembered password alone.
+
+The password is encrypted with Windows DPAPI for the signed-in Windows user,
+bound to the service address and username it was remembered for: another
+Windows account, another machine, or an entry moved to a different server in
+the file cannot decrypt it. Off Windows the box is not offered. Only the
+window remembers passwords; the command line keeps reusing the session.
+
 ## Data files
 
-`launcher-client.json` holds the launcher settings and the current session —
-**not** a password; those are only ever sent to the service. Treat the file as
-a credential anyway: the session GUID in it is enough to start the game as that
-account until it expires or is revoked.
+`launcher-client.json` holds the launcher settings, the current session, and
+any remembered passwords — those only DPAPI-encrypted, never in plain text
+(see above). Treat the file as a credential anyway: the session GUID in it is
+enough to start the game as that account until it expires or is revoked.
 
 It is found by walking up from the script or executable to the project root
 (the folder with `dso_installer.py`), so running from source and running
